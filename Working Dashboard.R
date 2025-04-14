@@ -1,6 +1,6 @@
 # Install required packages
 packages <- c("shiny", "shinydashboard", "readxl", "dplyr", "ggplot2", 
-              "plotly", "leaflet", "DT", "sf", "tidyr")
+              "plotly", "leaflet", "DT", "sf", "tidyr", "later")
 
 new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
 if(length(new_packages)) install.packages(new_packages)
@@ -36,7 +36,7 @@ ui <- dashboardPage(
     conditionalPanel(
       condition = "input.tabs == 'factors'",
       checkboxGroupInput("factor_select", "Select Factors:",
-                         choices = c("DEIS", "Fee-Paying", "Irish Speaking", "Gender", "School Size", "Ethos"),
+                         choices = c("DEIS", "Fee-Paying", "Irish Speaking", "Gender", "Ethos"),
                          selected = c("DEIS", "Fee-Paying"))
     ),
     
@@ -64,6 +64,7 @@ ui <- dashboardPage(
             width = 12,
             solidHeader = TRUE,
             p("This dashboard provides insights into school progression rates across Ireland."),
+            p("The data used was extracted from The Irish Times' annual Feeder Schools Tables."),
             p("Use the sidebar to navigate between different views.")
           )
         ),
@@ -220,7 +221,7 @@ server <- function(input, output, session) {
       mutate(ProgressionRate_Mean = pmax(ProgressionRate_Mean, 10)) %>%
       # Ensure LCSits_Mean is numeric and round to nearest whole number
       mutate(LCSits_Mean = round(as.numeric(LCSits_Mean))) %>%
-      # Categorize schools by size
+      # Categorise schools by size
       mutate(School_Size = case_when(
         LCSits_Mean < 50 ~ "Small",
         LCSits_Mean >= 50 & LCSits_Mean < 110 ~ "Medium",
@@ -259,7 +260,7 @@ server <- function(input, output, session) {
   
 
   
-  # County progression rate trend graph with improved scaling
+  # County progression rate trend graph
   output$county_trend <- renderPlotly({
     req(input$county_select, df())
     
@@ -295,16 +296,14 @@ server <- function(input, output, session) {
         axis.title = element_text(size = 12)
       )
     
-    ggplotly(p) %>% layout(margin = list(l = 80, r = 80, b = 80, t = 50))  # Increase margins
+    ggplotly(p) %>% layout(margin = list(l = 80, r = 80, b = 80, t = 50)) 
   })
   
   # Load Ireland map data
   ireland_map <- reactive({
-    # Check if the file exists, if not create dummy data for testing
     if(file.exists("ie.json")) {
       sf_map <- st_read("ie.json")
     } else {
-      # Create warning
       warning("Map file 'ie.json' not found. Using dummy data for testing.")
       sf_map <- data.frame(name = unique(df()$County)) %>%
         st_as_sf(coords = c(1, 1), crs = 4326)
@@ -312,7 +311,7 @@ server <- function(input, output, session) {
     
     sf_map$name <- as.character(sf_map$name)
     
-    # Fix county name discrepancies
+    # Fix name discrepancies
     sf_map <- sf_map %>%
       mutate(name = case_when(
         name == "Laoighis" ~ "Laois",
@@ -326,7 +325,7 @@ server <- function(input, output, session) {
     return(sf_map)
   })
   
-  # Update UI select inputs
+  # UI select inputs
   observe({
     req(df())
     counties <- sort(unique(df()$County))
@@ -337,7 +336,7 @@ server <- function(input, output, session) {
   # Overview tab outputs
   output$avg_progression_box <- renderValueBox({
     req(df())
-    avg_rate <- mean(df()$ProgressionRate_Mean, na.rm = TRUE)
+    avg_rate <- weighted.mean(df()$ProgressionRate_Mean, w = df()$LCSits_Mean, na.rm = TRUE)
     valueBox(
       paste0(round(avg_rate, 1), "%"), 
       "Average Progression Rate",
@@ -419,7 +418,7 @@ server <- function(input, output, session) {
     top5 <- head(county_data(), 5)
     
     p <- ggplot(top5, aes(x = reorder(County, CountyProgressionRate), y = CountyProgressionRate, fill = CountyProgressionRate)) +
-      geom_col() +
+      geom_col(fill = "#6CA6CD") +
       geom_text(aes(label = paste0(round(CountyProgressionRate, 1), "%")), hjust = -0.3, fontface = "bold") +
       labs(x = "", y = "Progression Rate (%)") +
       theme_minimal() +
@@ -435,7 +434,7 @@ server <- function(input, output, session) {
     bottom5 <- tail(county_data(), 5)
     
     p <- ggplot(bottom5, aes(x = reorder(County, -CountyProgressionRate), y = CountyProgressionRate, fill = CountyProgressionRate)) +
-      geom_col() +
+      geom_col(fill = "#6CA6CD") +
       geom_text(aes(label = paste0(round(CountyProgressionRate, 1), "%")), hjust = -0.3, fontface = "bold") +
       labs(x = "", y = "Progression Rate (%)") +
       theme_minimal() +
@@ -484,22 +483,21 @@ server <- function(input, output, session) {
       )
   })
   
-  # County comparison plot with improved scaling and fix for missing bars
+  # County comparison plot
   output$county_comparison <- renderPlotly({
     req(input$county_select, df())
     
     # Load county trend data
     df_county_trend <- read_excel("Consolidated_DataSet.xlsx", sheet = 3)
     
-    # Get selected county data
     selected_county_current <- df() %>%
       filter(County == input$county_select) %>%
-      summarise(AvgRate = mean(ProgressionRate_Mean, na.rm = TRUE)) %>%
+      summarise(AvgRate = weighted.mean(ProgressionRate_Mean, w = LCSits_Mean, na.rm = TRUE)) %>%
       pull(AvgRate)
     
     # Get national average
     national_avg <- df() %>%
-      summarise(AvgRate = mean(ProgressionRate_Mean, na.rm = TRUE)) %>%
+      summarise(AvgRate = weighted.mean(ProgressionRate_Mean, w = LCSits_Mean, na.rm = TRUE)) %>%
       pull(AvgRate)
     
     # Ensure no NA values
@@ -531,7 +529,6 @@ server <- function(input, output, session) {
         axis.title = element_text(size = 12)
       )
     
-    # Convert to plotly and ensure proper rendering
     ggplotly(p) %>%
       layout(
         autosize = TRUE,
@@ -595,10 +592,7 @@ server <- function(input, output, session) {
     
     # Handle multiple factor selections
     if (length(input$factor_select) > 1) {
-      # Get secondary factor for filling
       secondary_factor <- input$factor_select[2]
-      
-      # Handle potential column name issues for secondary factor
       if (secondary_factor == "Fee-Paying") {
         secondary_factor <- "FeePaying"
       } else if (secondary_factor == "Irish Speaking") {
@@ -620,7 +614,7 @@ server <- function(input, output, session) {
       # Create a position dodge for side-by-side bars
       position <- position_dodge(width = 0.9)
       
-      # Create the plot with secondary factor as fill
+      # Create the plot
       p <- ggplot(factor_data, aes_string(x = primary_factor, y = "AvgProgression", 
                                           fill = secondary_factor)) +
         geom_col(position = position, width = 0.8) +
@@ -635,7 +629,7 @@ server <- function(input, output, session) {
           axis.text.x = element_text(angle = 45, hjust = 1)
         )
     } else {
-      # Simple plot for single factor
+     
       factor_data <- df() %>%
         group_by_at(vars(all_of(primary_factor))) %>%
         summarise(
@@ -654,7 +648,7 @@ server <- function(input, output, session) {
         theme(legend.position = "none")
     }
     
-    # Adjust the plot with margins that fit the container
+    
     ggplotly(p) %>% layout(
       autosize = TRUE,
       margin = list(l = 60, r = 40, b = 80, t = 20),
